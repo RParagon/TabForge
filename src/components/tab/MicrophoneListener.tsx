@@ -301,6 +301,11 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
         <h3 className="text-sm font-bold text-primary flex items-center gap-2">
           <Mic className="w-4 h-4" />
           Escuta Inteligente
+          {/* BPM badge — always shows tablature tempo */}
+          <span className="ml-1 px-2 py-0.5 bg-secondary rounded-full text-[10px] font-mono text-muted-foreground font-normal flex items-center gap-1">
+            <Timer className="w-2.5 h-2.5" />
+            {tempo} BPM
+          </span>
         </h3>
         <Button
           size="sm"
@@ -337,7 +342,15 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
       <p className="text-xs text-muted-foreground leading-relaxed">
         {mode === 'manual' && 'A nota detectada fica "travada" na tela. Você decide quando inserir, mesmo após parar de tocar.'}
         {mode === 'sequential' && 'Cada nota é adicionada ao próximo tempo automaticamente após 300ms de silêncio.'}
-        {mode === 'bpm_sync' && `Captura a nota mais recente a cada batida (${Math.round(60000 / tempo)}ms) e avança o cursor.`}
+        {mode === 'bpm_sync' && (
+          <>
+            Captura a nota mais recente a cada{' '}
+            <span className="text-primary font-semibold font-mono">{Math.round(60000 / tempo)}ms</span>
+            {' '}— sincronizado com os{' '}
+            <span className="text-primary font-semibold">{tempo} BPM</span>
+            {' '}da tablatura.
+          </>
+        )}
       </p>
 
       {/* Sensitivity */}
@@ -533,7 +546,7 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
           {mode === 'sequential'
             ? 'No modo Sequencial, cada nota é confirmada pelo silêncio e adicionada automaticamente.'
             : mode === 'bpm_sync'
-              ? `No modo BPM Sync, o cursor avança a cada ${Math.round(60000 / tempo)}ms no ritmo do BPM.`
+              ? `No modo BPM Sync, o cursor avança a cada ${Math.round(60000 / tempo)}ms — sincronizado com os ${tempo} BPM da tablatura.`
               : 'No modo Manual, a nota fica travada na tela e você insere quando quiser.'
           }
         </p>
