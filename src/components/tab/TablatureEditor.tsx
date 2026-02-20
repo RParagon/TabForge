@@ -1,15 +1,16 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Beat, STRING_NAMES, createEmptyBeat, createPauseBeat,
-  getNotesFromBeat, detectChords, NOTE_NAMES_PT
+  getNotesFromBeat, detectChords, NOTE_NAMES_PT, transposeBeats
 } from '@/lib/music';
 import { playNotes, playClick } from '@/lib/audio';
 import { ChordPanel } from './ChordPanel';
 import { MicrophoneListener } from './MicrophoneListener';
+import { MelodyAnalysis } from './MelodyAnalysis';
 import { Button } from '@/components/ui/button';
 import {
   Plus, Pause, Play, Square, FileDown, Music,
-  Trash2, Volume2, SkipForward, ChevronRight, Mic
+  Trash2, Volume2, SkipForward, ChevronRight, Mic, Sparkles
 } from 'lucide-react';
 
 const BEATS_PER_LINE = 16;
@@ -21,13 +22,21 @@ export const TablatureEditor: React.FC = () => {
   );
   const [tempo, setTempo] = useState(120);
   const [selectedBeat, setSelectedBeat] = useState(0);
+  // Ref that always mirrors selectedBeat so long-lived closures (RAF loops)
+  // can read the CURRENT beat without a stale-closure bug.
+  const selectedBeatRef = useRef(0);
+  useEffect(() => { selectedBeatRef.current = selectedBeat; }, [selectedBeat]);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayBeat, setCurrentPlayBeat] = useState(-1);
   const [showChordPanel, setShowChordPanel] = useState(false);
   const [selectedChord, setSelectedChord] = useState<string | null>(null);
   const [showMicListener, setShowMicListener] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [recordingCursor, setRecordingCursor] = useState<number | null>(null); // beat index with pulsing cursor
   const playTimeoutRef = useRef<number | null>(null);
 
+  // ── Beat editing ────────────────────────────────────────────────────────────
   const updateFret = (beatIdx: number, stringIdx: number, value: string) => {
     setBeats(prev => {
       const next = [...prev];
@@ -42,7 +51,7 @@ export const TablatureEditor: React.FC = () => {
     });
   };
 
-  const addBeat = () => setBeats(prev => [...prev, createEmptyBeat()]);
+  const addBeat = useCallback(() => setBeats(prev => [...prev, createEmptyBeat()]), []);
   const addPause = () => setBeats(prev => [...prev, createPauseBeat()]);
 
   const insertBeatAfter = (idx: number) => {
@@ -75,7 +84,7 @@ export const TablatureEditor: React.FC = () => {
     });
   };
 
-  // Playback
+  // ── Playback ────────────────────────────────────────────────────────────────
   const playBeatSound = useCallback((beat: Beat) => {
     playClick();
     if (beat.isPause) return;
@@ -118,7 +127,55 @@ export const TablatureEditor: React.FC = () => {
     return () => { if (playTimeoutRef.current) clearTimeout(playTimeoutRef.current); };
   }, []);
 
-  // Current beat info
+  // ── Smart Listening callback ─────────────────────────────────────────────────
+  /**
+   * Called by MicrophoneListener when a note is committed.
+   * Uses selectedBeatRef (not the state) to avoid stale closures in RAF loops.
+   * @param stringIndex  Guitar string index (0=e, 5=E)
+   * @param fret         Fret number (-1 means blank/rest advance only)
+   * @param advanceBeat  Whether to move cursor to next beat after inserting
+   */
+  const handleNoteCommitted = useCallback((stringIndex: number, fret: number, advanceBeat: boolean) => {
+    const currentBeat = selectedBeatRef.current;  // always fresh
+
+    setBeats(prev => {
+      const next = [...prev];
+
+      if (fret >= 0) {
+        // Grow array if needed
+        while (next.length <= currentBeat) next.push(createEmptyBeat());
+        next[currentBeat] = {
+          ...next[currentBeat],
+          isPause: false,
+          strings: next[currentBeat].strings.map((s, i) =>
+            i === stringIndex ? fret : s
+          ),
+        };
+      }
+
+      if (advanceBeat && currentBeat >= next.length - 1) {
+        next.push(createEmptyBeat());
+      }
+
+      return next;
+    });
+
+    if (advanceBeat) {
+      const next = currentBeat + 1;
+      selectedBeatRef.current = next;   // update ref immediately so next call sees it
+      setSelectedBeat(next);
+      setRecordingCursor(next);
+    } else {
+      setRecordingCursor(currentBeat);
+    }
+  }, []);  // no deps needed — reads live ref, writes via functional setters
+
+  // Clear recording cursor when mic is hidden
+  useEffect(() => {
+    if (!showMicListener) setRecordingCursor(null);
+  }, [showMicListener]);
+
+  // ── Current beat info ────────────────────────────────────────────────────────
   const selectedBeatData = beats[selectedBeat];
   const selectedNotes = selectedBeatData ? getNotesFromBeat(selectedBeatData) : [];
   const detectedChords = detectChords(selectedNotes);
@@ -129,7 +186,7 @@ export const TablatureEditor: React.FC = () => {
     lines.push({ beats: beats.slice(i, i + BEATS_PER_LINE), offset: i });
   }
 
-  // PDF Export
+  // ── PDF Export ───────────────────────────────────────────────────────────────
   const exportPDF = () => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
@@ -158,7 +215,6 @@ export const TablatureEditor: React.FC = () => {
       }
       tabHtml += '</pre>';
 
-      // Chord/note labels
       let labels = '   ';
       for (const beat of lineBeats) {
         const notes = getNotesFromBeat(beat);
@@ -192,6 +248,7 @@ export const TablatureEditor: React.FC = () => {
     setTimeout(() => printWindow.print(), 300);
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="w-full max-w-7xl mx-auto space-y-5">
       {/* Header */}
@@ -232,8 +289,20 @@ export const TablatureEditor: React.FC = () => {
         <Button onClick={() => setShowChordPanel(!showChordPanel)} size="sm" variant="outline">
           <Music className="w-4 h-4 mr-1" /> Acordes
         </Button>
-        <Button onClick={() => setShowMicListener(!showMicListener)} size="sm" variant={showMicListener ? 'default' : 'outline'}>
+        <Button
+          onClick={() => setShowMicListener(!showMicListener)}
+          size="sm"
+          variant={showMicListener ? 'default' : 'outline'}
+        >
           <Mic className="w-4 h-4 mr-1" /> Escutar
+        </Button>
+        <Button
+          onClick={() => setShowAnalysis(!showAnalysis)}
+          size="sm"
+          variant={showAnalysis ? 'default' : 'outline'}
+          className={showAnalysis ? '' : 'border-primary/40 text-primary hover:bg-primary/10'}
+        >
+          <Sparkles className="w-4 h-4 mr-1" /> Análise
         </Button>
         <div className="w-px bg-border mx-1" />
         <Button onClick={exportPDF} size="sm" variant="outline">
@@ -277,14 +346,23 @@ export const TablatureEditor: React.FC = () => {
                     const beatIdx = line.offset + i;
                     const isSelected = beatIdx === selectedBeat;
                     const isPlayingBeat = beatIdx === currentPlayBeat;
+                    const isRecording = recordingCursor !== null && beatIdx === recordingCursor;
+
                     return (
                       <div
                         key={beatIdx}
-                        className={`relative w-11 h-7 flex items-center justify-center cursor-pointer transition-all duration-100 border-r border-border/20 ${
-                          isPlayingBeat ? 'bg-accent/20' : isSelected ? 'bg-primary/10' : ''
-                        } ${beat.isPause ? 'bg-muted/40' : ''}`}
+                        className={`relative w-11 h-7 flex items-center justify-center cursor-pointer transition-all duration-100 border-r border-border/20 ${isPlayingBeat ? 'bg-accent/20'
+                          : isRecording ? 'bg-primary/20'
+                            : isSelected ? 'bg-primary/10'
+                              : ''
+                          } ${beat.isPause ? 'bg-muted/40' : ''}`}
                         onClick={() => setSelectedBeat(beatIdx)}
                       >
+                        {/* Recording pulse ring */}
+                        {isRecording && stringIdx === 0 && (
+                          <span className="absolute inset-0 ring-2 ring-primary/60 rounded pointer-events-none animate-pulse z-20" />
+                        )}
+
                         <div
                           className="tab-string-line"
                           style={{ backgroundColor: `hsl(var(--string-${stringIdx + 1}))` }}
@@ -316,7 +394,10 @@ export const TablatureEditor: React.FC = () => {
                   const beatIdx = line.offset + i;
                   return (
                     <div key={beatIdx} className="w-11 text-center">
-                      <span className={`text-[10px] ${beatIdx === selectedBeat ? 'text-primary font-bold' : 'text-muted-foreground'}`}>
+                      <span className={`text-[10px] ${beatIdx === recordingCursor ? 'text-primary font-black animate-pulse'
+                        : beatIdx === selectedBeat ? 'text-primary font-bold'
+                          : 'text-muted-foreground'
+                        }`}>
                         {beatIdx + 1}
                       </span>
                     </div>
@@ -364,6 +445,11 @@ export const TablatureEditor: React.FC = () => {
               Tempo {selectedBeat + 1}
               {selectedBeatData.isPause ? ' — Pausa' : ''}
               {selectedBeatData.tempoChange ? ` — ${selectedBeatData.tempoChange} BPM` : ''}
+              {recordingCursor === selectedBeat && (
+                <span className="ml-2 text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded animate-pulse">
+                  ● Gravando
+                </span>
+              )}
             </h3>
             <div className="flex gap-1.5">
               <Button size="sm" variant="ghost" onClick={() => togglePause(selectedBeat)} title={selectedBeatData.isPause ? 'Remover pausa' : 'Marcar como pausa'}>
@@ -385,7 +471,7 @@ export const TablatureEditor: React.FC = () => {
             </div>
           </div>
 
-          {/* Tempo change for this beat */}
+          {/* Tempo change */}
           <div className="flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">Mudança de BPM:</span>
             <input
@@ -447,23 +533,27 @@ export const TablatureEditor: React.FC = () => {
       {/* Microphone Listener */}
       {showMicListener && (
         <MicrophoneListener
-          onNoteDetected={(stringIndex, fret) => {
-            setBeats(prev => {
-              const next = [...prev];
-              next[selectedBeat] = {
-                ...next[selectedBeat],
-                isPause: false,
-                strings: next[selectedBeat].strings.map((s, i) =>
-                  i === stringIndex ? fret : s
-                ),
-              };
-              return next;
-            });
-          }}
+          onNoteCommitted={handleNoteCommitted}
           onAddBeat={() => {
             addBeat();
             setSelectedBeat(beats.length);
           }}
+          currentBeatIndex={selectedBeat}
+          totalBeats={beats.length}
+          tempo={tempo}
+        />
+      )}
+
+      {/* Melody Analysis */}
+      {showAnalysis && (
+        <MelodyAnalysis
+          beats={beats}
+          tempo={tempo}
+          onApplyTransposition={transposedBeats => {
+            setBeats(transposedBeats);
+            setShowAnalysis(false);
+          }}
+          onClose={() => setShowAnalysis(false)}
         />
       )}
 
