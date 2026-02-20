@@ -243,6 +243,24 @@ export interface ProgressionSuggestion {
   description: string;
 }
 
+// Helper to build a ChordSuggestion from any root MIDI class and suffix
+function buildChord(rootMidi: number, suffix: string, degLabel: string, fn: string): ChordSuggestion {
+  const chordRoot = ((rootMidi % 12) + 12) % 12;
+  const name = NOTE_NAMES[chordRoot] + suffix;
+  const intervals =
+    suffix === 'm' ? [0, 3, 7] :
+      suffix === 'm7' ? [0, 3, 7, 10] :
+        suffix === 'maj7' ? [0, 4, 7, 11] :
+          suffix === '7' ? [0, 4, 7, 10] :
+            suffix === 'dim' ? [0, 3, 6] :
+              suffix === 'dim7' ? [0, 3, 6, 9] :
+                suffix === 'aug' ? [0, 4, 8] :
+                  suffix === 'm7b5' ? [0, 3, 6, 10] :
+                    [0, 4, 7];
+  const notes = intervals.map(i => NOTE_NAMES[(chordRoot + i) % 12]);
+  return { degree: degLabel, name, function: fn, notes };
+}
+
 export function harmonySuggestions(root: number, quality: 'major' | 'minor'): ProgressionSuggestion[] {
   const steps = quality === 'major' ? MAJOR_SCALE_STEPS : MINOR_SCALE_STEPS;
   const qualities = quality === 'major' ? MAJOR_DIATONIC : MINOR_DIATONIC;
@@ -259,43 +277,105 @@ export function harmonySuggestions(root: number, quality: 'major' | 'minor'): Pr
     return { degree: degrees[idx], name: chordName, function: degreeFunction(idx, quality), notes: chordNotes };
   });
 
+  // Shortcuts
   const i = diatonic[0];
   const ii = diatonic[1];
   const iii = diatonic[2];
   const iv = diatonic[3];
   const v = diatonic[4];
   const vi = diatonic[5];
+  const vii = diatonic[6] || v;
+
+  // Jazz 7th versions
+  const iMaj7 = buildChord(root + steps[0], quality === 'major' ? 'maj7' : 'm7', degrees[0], degreeFunction(0, quality));
+  const iiM7 = buildChord(root + steps[1], quality === 'major' ? 'm7' : 'm7b5', degrees[1], degreeFunction(1, quality));
+  const iiiM7 = buildChord(root + steps[2], quality === 'major' ? 'm7' : 'maj7', degrees[2], degreeFunction(2, quality));
+  const ivM7 = buildChord(root + steps[3], quality === 'major' ? 'maj7' : 'm7', degrees[3], degreeFunction(3, quality));
+  const v7 = buildChord(root + steps[4], '7', degrees[4], degreeFunction(4, quality));
+  const viM7 = buildChord(root + steps[5], quality === 'major' ? 'm7' : 'maj7', degrees[5], degreeFunction(5, quality));
+
+  // Blues: I7–IV7–V7 (dominant 7ths regardless of quality)
+  const I7 = buildChord(root, '7', 'I7', 'Tônica dom.');
+  const IV7 = buildChord(root + 5, '7', 'IV7', 'Subdominante dom.');
+  const V7 = buildChord(root + 7, '7', 'V7', 'Dominante dom.');
+
+  // Bossa / secondary dominants
+  const V7ofIV = buildChord(root + 5 + 7, '7', 'V7/IV', 'Dominante sec.');
+  const IIdim = buildChord(root + 2, 'dim', 'ii°', 'Supertônica dim.');
+
+  // Pachelbel Canon scale steps (diatonic, always major)
+  const canonSteps = [0, 7, 9, 4, 5, 0, 5, 7]; // I-V-vi-iii-IV-I-IV-V semitone offsets
+  const canonQualities = ['', '', 'm', 'm', '', '', '', ''];
+  const canonDegrees = ['I', 'V', 'vi', 'iii', 'IV', 'I', 'IV', 'V'];
+  const canonChords = canonSteps.map((s, idx) =>
+    buildChord(root + s, canonQualities[idx], canonDegrees[idx], '')
+  );
+
+  // Andalucia / Flamenco: i-bVII-bVI-V  (always in minor feel)
+  const bVII = buildChord(root + 10, '', 'bVII', 'Subtônica');
+  const bVI = buildChord(root + 8, '', 'bVI', 'Submediante b');
+  const Vdom = buildChord(root + 7, '', 'V', 'Dominante');
 
   const progressions: ProgressionSuggestion[] = [
     {
       name: quality === 'major' ? 'Cadência Perfeita (I–IV–V–I)' : 'Cadência Menor (i–iv–v–i)',
       chords: [i, iv, v, i],
-      description: 'Progressão clássica, base de inúmeras músicas.',
+      description: 'Progressão clássica, base de inúmeras músicas populares e folk.',
     },
     {
-      name: quality === 'major' ? 'ii–V–I' : 'ii°–V–i',
-      chords: [ii, v, i],
-      description: 'Progressão jazzística fundamental.',
+      name: quality === 'major' ? 'ii–V–I (Jazz)' : 'ii°–V–i (Jazz)',
+      chords: [iiM7, v7, iMaj7],
+      description: 'Progressão jazzística fundamental com acordes de sétima.',
     },
     {
-      name: quality === 'major' ? 'I–V–vi–IV' : 'i–VII–VI–VII',
-      chords: quality === 'major' ? [i, v, vi, iv] : [i, diatonic[6] || v, diatonic[5] || iv, diatonic[6] || v],
-      description: 'Pop/Rock clássico — uma das mais usadas no mundo.',
+      name: quality === 'major' ? 'I–V–vi–IV (Pop/Rock)' : 'i–VII–VI–VII',
+      chords: quality === 'major' ? [i, v, vi, iv] : [i, vii, diatonic[5] ?? iv, vii],
+      description: 'Pop e Rock clássico — uma das progressões mais usadas do mundo.',
     },
     {
-      name: quality === 'major' ? 'I–IV–I–V' : 'i–iv–i–v',
-      chords: [i, iv, i, v],
-      description: 'Folk e country — simples e eficaz.',
+      name: 'Blues 12 Compassos',
+      chords: [I7, I7, IV7, I7, V7, IV7, I7, V7],
+      description: 'Blues 12-bar com dominantes — base do Rock, Blues e R&B.',
+    },
+    {
+      name: 'Cânon de Pachelbel',
+      chords: canonChords.slice(0, 4),
+      description: 'I–V–vi–iii: uma das progressões mais reconhecíveis da história.',
+    },
+    {
+      name: 'I–VI–II–V (Doo-Wop / Anos 50)',
+      chords: [i, vi, ii, v],
+      description: 'Ouvida em centenas de músicas dos anos 50-60 e no jazz romântico.',
+    },
+    {
+      name: 'Andaluzia / Flamenco',
+      chords: [{ ...i, degree: 'i' }, bVII, bVI, Vdom],
+      description: 'i–bVII–bVI–V: progressão flamenca com caráter dramático.',
+    },
+    {
+      name: 'Bossa Nova (I–VI–II–V)',
+      chords: [iMaj7, viM7, iiM7, v7],
+      description: 'Progressão bossa nova com acordes de 7ª — smoother e sofisticado.',
     },
     {
       name: quality === 'major' ? 'I–iii–IV–V' : 'i–III–iv–v',
       chords: [i, iii, iv, v],
-      description: 'Som introspectivo com tensão crescente.',
+      description: 'Som introspectivo com tensão crescente — muito usado no pop alternativo.',
+    },
+    {
+      name: quality === 'major' ? 'I–IV–I–V' : 'i–iv–i–v',
+      chords: [i, iv, i, v],
+      description: 'Folk e country — simples, direta e eficaz.',
     },
     {
       name: 'Ciclo das Quintas',
-      chords: [i, iv, diatonic[6] || v, iii || ii, vi || v, ii, v, i].slice(0, 4),
-      description: 'Movimento harmônico pelo ciclo de quintas.',
+      chords: [i, iv, vii, iii].slice(0, 4),
+      description: 'Movimento harmônico em quintas — comum no jazz e na música barroca.',
+    },
+    {
+      name: quality === 'major' ? 'Imaj7–IVmaj7–ii–V7 (Jazz Modal)' : 'im7–IVm7–bVII–V7',
+      chords: [iMaj7, ivM7, iiM7, v7],
+      description: 'Progressão modal com textura jazzística — usada em fusion e MPB.',
     },
   ];
 
@@ -395,8 +475,136 @@ export const CHORD_LIBRARY: ChordFingering[] = [
   { name: 'Esus4', frets: [0, 0, 2, 2, 2, 0], startFret: 1, barres: [] },
 ];
 
+// === Chord name → note index map ===
+const CHORD_NOTE_MAP: Record<string, number> = {
+  'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3, 'E': 4,
+  'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8, 'Ab': 8,
+  'A': 9, 'A#': 10, 'Bb': 10, 'B': 11,
+};
+
+// Movable shape offsets from barre fret N.  Array = [e, B, G, D, A, E]. -1=muted.
+// E-form: root on low E string.  A-form: root on A string (E=muted).
+const MOVABLE_SHAPES: Record<string, { e: number[]; a: number[] }> = {
+  '': { e: [0, 0, 1, 2, 2, 0], a: [0, 2, 2, 2, 0, -1] },
+  'm': { e: [0, 0, 0, 2, 2, 0], a: [0, 1, 2, 2, 0, -1] },
+  '7': { e: [0, 0, 1, 0, 2, 0], a: [0, 2, 0, 2, 0, -1] },
+  'm7': { e: [0, 0, 0, 0, 2, 0], a: [0, 1, 0, 2, 0, -1] },
+  'maj7': { e: [0, 0, 1, 1, 2, 0], a: [0, 2, 1, 2, 0, -1] },
+  'dim': { e: [0, 0, 0, 1, 2, 0], a: [0, 0, 0, 1, 0, -1] },
+  'dim7': { e: [0, 0, 0, 1, 2, 0], a: [0, 0, 0, 1, 0, -1] },
+  'm7b5': { e: [0, 0, 0, 1, 2, 0], a: [0, 1, 0, 1, 0, -1] },
+  'aug': { e: [0, 0, 1, 2, 3, 0], a: [0, 2, 2, 3, 0, -1] },
+  'sus2': { e: [0, 0, 0, 2, 2, 0], a: [0, 2, 0, 2, 0, -1] },
+  'sus4': { e: [0, 1, 1, 2, 2, 0], a: [0, 3, 2, 2, 0, -1] },
+  '6': { e: [0, 2, 1, 2, 2, 0], a: [0, 2, 2, 2, 0, -1] },
+  'm6': { e: [0, 2, 0, 2, 2, 0], a: [0, 1, 2, 2, 0, -1] },
+  'add9': { e: [0, 2, 1, 2, 2, 0], a: [0, 0, 2, 2, 0, -1] },
+};
+
+/**
+ * Compute a barre chord fingering algorithmically using E-form or A-form
+ * movable shapes. Prefers the form that puts fingers lower on the neck.
+ */
+export function computeChordFingering(chordName: string): ChordFingering | undefined {
+  // Parse root (up to 2 chars: note + optional accidental)
+  const rootMatch = chordName.match(/^([A-G][#b]?)/);
+  if (!rootMatch) return undefined;
+  const rootStr = rootMatch[1];
+  const quality = chordName.slice(rootStr.length); // e.g. 'm7', '7', ''
+
+  const rootIdx = CHORD_NOTE_MAP[rootStr];
+  if (rootIdx === undefined) return undefined;
+
+  // Shape table (fall back to major if unknown quality)
+  const shape = MOVABLE_SHAPES[quality] ?? MOVABLE_SHAPES[''];
+
+  // E string = MIDI 40 = note E = index 4
+  // A string = MIDI 45 = note A = index 9
+  const eFret = ((rootIdx - 4) + 12) % 12;  // fret on low E for root
+  const aFret = ((rootIdx - 9) + 12) % 12;  // fret on A for root
+
+  // Convert 0 → 12 (open-position root already handled by CHORD_LIBRARY)
+  const ePos = eFret === 0 ? 12 : eFret;
+  const aPos = aFret === 0 ? 12 : aFret;
+
+  // Prefer form that places barre lower on neck
+  const useAForm = aPos <= ePos;
+  const N = useAForm ? aPos : ePos;
+  const offsets = useAForm ? shape.a : shape.e;
+
+  // Build absolute fret array
+  const frets = offsets.map(o => (o === -1 ? -1 : N + o));
+
+  return {
+    name: chordName,
+    frets,
+    startFret: N,
+    barres: [N],
+  };
+}
+
+/**
+ * Get chord fingering: library first, then compute algorithmically.
+ */
 export function getChordFingering(name: string): ChordFingering | undefined {
-  return CHORD_LIBRARY.find(c => c.name === name);
+  return CHORD_LIBRARY.find(c => c.name === name) ?? computeChordFingering(name);
+}
+
+/**
+ * Convert a chord progression chord into a Beat using its computed fingering.
+ * This gives a musically valid, playable voicing rather than scattered note placement.
+ */
+export function chordToPlayableBeat(chordName: string, fallbackNotes: string[]): Beat {
+  const fingering = getChordFingering(chordName);
+  if (fingering) {
+    // Use the voicing directly — guaranteed playable shape
+    return {
+      strings: fingering.frets.map(f => (f === -1 ? null : f)),
+      isPause: false,
+    };
+  }
+
+  // Fallback: place each note in the same position range to cluster them
+  // Target: keep all notes in the same fret window (max span 4 frets)
+  const strings: (number | null)[] = [null, null, null, null, null, null];
+  const usedStrings = new Set<number>();
+
+  // Convert note names → target MIDI in a reasonable octave range
+  const midiList = fallbackNotes.map(n => {
+    const idx = NOTE_NAMES.indexOf(n);
+    return idx >= 0 ? idx + 48 : -1; // octave 4 base
+  }).filter(m => m > 0).sort((a, b) => a - b);
+
+  // First pass: find window — try to cluster within 4-fret span
+  let bestWindow = { start: 0, cost: Infinity };
+  for (let windowStart = 0; windowStart <= 12; windowStart++) {
+    let placed = 0;
+    for (const midi of midiList) {
+      for (let s = 5; s >= 0; s--) {
+        const fret = midi - STRING_MIDI_BASE[s];
+        if (fret >= windowStart && fret <= windowStart + 4) { placed++; break; }
+      }
+    }
+    if (placed > bestWindow.cost || (placed === midiList.length && windowStart < bestWindow.start)) {
+      bestWindow = { start: windowStart, cost: placed };
+    }
+  }
+
+  // Second pass: assign notes in the best window
+  for (const midi of midiList) {
+    let placed = false;
+    for (let s = 5; s >= 0 && !placed; s--) {
+      if (usedStrings.has(s)) continue;
+      const fret = midi - STRING_MIDI_BASE[s];
+      if (fret >= bestWindow.start && fret <= bestWindow.start + 5 && fret >= 0) {
+        strings[s] = fret;
+        usedStrings.add(s);
+        placed = true;
+      }
+    }
+  }
+
+  return { strings, isPause: false };
 }
 
 export function createEmptyBeat(): Beat {
@@ -407,11 +615,45 @@ export function createPauseBeat(): Beat {
   return { strings: [null, null, null, null, null, null], isPause: true };
 }
 
-// === Best string mapping for a MIDI note ===
+// === Scale Positions on the Fretboard ===
+export interface ScalePosition {
+  stringIndex: number;
+  fret: number;
+  noteName: string;
+  degreeIndex: number;  // 0-based degree in the scale
+  isRoot: boolean;
+}
+
 /**
- * Given a MIDI note, return the best (string, fret) pair that keeps
- * the fret as low as possible, preferring middle strings.
+ * Returns all positions within [0, fretRange] where a note of the given
+ * scale can be played on the guitar.
  */
+export function getScalePositions(root: number, scaleName: string, fretRange = 12): ScalePosition[] {
+  const scale = SCALES.find(s => s.name === scaleName);
+  if (!scale) return [];
+  const scaleNotes = scale.intervals.map(i => (root + i) % 12);
+  const positions: ScalePosition[] = [];
+
+  for (let s = 0; s < 6; s++) {
+    for (let f = 0; f <= fretRange; f++) {
+      const midi = STRING_MIDI_BASE[s] + f;
+      const noteIdx = ((midi % 12) + 12) % 12;
+      const degreeIdx = scaleNotes.indexOf(noteIdx);
+      if (degreeIdx !== -1) {
+        positions.push({
+          stringIndex: s,
+          fret: f,
+          noteName: NOTE_NAMES[noteIdx],
+          degreeIndex: degreeIdx,
+          isRoot: noteIdx === root,
+        });
+      }
+    }
+  }
+  return positions;
+}
+
+// === Best string mapping for a MIDI note ===
 export function bestGuitarPosition(midi: number): { stringIndex: number; fret: number } | null {
   let best: { stringIndex: number; fret: number } | null = null;
   for (let s = 0; s < 6; s++) {
@@ -424,3 +666,4 @@ export function bestGuitarPosition(midi: number): { stringIndex: number; fret: n
   }
   return best;
 }
+

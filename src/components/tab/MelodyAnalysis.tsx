@@ -4,13 +4,14 @@ import {
     detectKey, KeyMatch, harmonySuggestions, ProgressionSuggestion,
     melodyIdeas, MelodyVariation, transposeBeats, getScaleNotes,
     getNotesFromBeat, getChordFingering, STRING_NAMES, createEmptyBeat,
-    bestGuitarPosition, getNoteFromFret
+    getScalePositions, chordToPlayableBeat, ScalePosition
 } from '@/lib/music';
 import { playNotes, playClick } from '@/lib/audio';
 import { ChordDiagram } from './ChordDiagram';
 import {
     X, ChevronDown, ChevronRight, Sparkles, Music, GitBranch,
-    BarChart2, Lightbulb, Play, ArrowLeftRight, CheckCircle2, Info
+    BarChart2, Lightbulb, Play, ArrowLeftRight, CheckCircle2, Info,
+    PlusCircle, RefreshCw, Guitar
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -18,6 +19,7 @@ interface MelodyAnalysisProps {
     beats: Beat[];
     tempo: number;
     onApplyTransposition: (transposedBeats: Beat[]) => void;
+    onInsertBeats: (newBeats: Beat[]) => void;
     onClose: () => void;
 }
 
@@ -85,16 +87,113 @@ function Section({
     );
 }
 
+// ── Fretboard scale diagram ─────────────────────────────────────────────────
+// Shows notes of a scale on a 12-fret mini fretboard grid
+const DEGREE_COLORS = [
+    '#f59e0b', // root — amber/primary
+    '#60a5fa', // 2nd
+    '#34d399', // 3rd
+    '#f87171', // 4th
+    '#a78bfa', // 5th
+    '#fb923c', // 6th
+    '#38bdf8', // 7th
+];
+
+function ScaleFretboard({
+    positions, fretRange = 12, highlightedNotes
+}: {
+    positions: ScalePosition[];
+    fretRange?: number;
+    highlightedNotes?: Set<string>; // notes that appear in the tablature
+}) {
+    const CELL_W = 28;
+    const CELL_H = 18;
+    const LABEL_W = 16;
+    if (positions.length === 0) return null;
+
+    return (
+        <div className="overflow-x-auto">
+            <div
+                className="inline-grid text-[9px] font-mono select-none"
+                style={{ gridTemplateColumns: `${LABEL_W}px repeat(${fretRange + 1}, ${CELL_W}px)` }}
+            >
+                {/* Header: fret numbers */}
+                <span className="text-muted-foreground" />
+                {Array.from({ length: fretRange + 1 }, (_, f) => (
+                    <span key={f} className="text-center text-muted-foreground px-0.5">
+                        {f === 0 ? '' : f % 3 === 0 ? f : '·'}
+                    </span>
+                ))}
+
+                {/* Strings */}
+                {[0, 1, 2, 3, 4, 5].map(s => (
+                    <React.Fragment key={s}>
+                        <span
+                            className="flex items-center justify-end pr-1 font-bold"
+                            style={{ color: `hsl(var(--string-${s + 1}))` }}
+                        >
+                            {STRING_NAMES[s]}
+                        </span>
+                        {Array.from({ length: fretRange + 1 }, (_, f) => {
+                            const pos = positions.find(p => p.stringIndex === s && p.fret === f);
+                            const isInTab = pos && highlightedNotes?.has(pos.noteName);
+                            return (
+                                <div
+                                    key={f}
+                                    className="flex items-center justify-center border-l border-border/20"
+                                    style={{ height: CELL_H }}
+                                >
+                                    {f === 0 && (
+                                        // Nut line
+                                        <div className="w-full h-full border-r-2 border-foreground/30" />
+                                    )}
+                                    {pos ? (
+                                        <div
+                                            className="w-5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold relative z-10"
+                                            style={{
+                                                backgroundColor: DEGREE_COLORS[pos.degreeIndex % DEGREE_COLORS.length],
+                                                color: '#000',
+                                                outline: isInTab ? '2px solid white' : undefined,
+                                            }}
+                                            title={`${pos.noteName} (grau ${pos.degreeIndex + 1}) — corda ${STRING_NAMES[s]}, casa ${f}`}
+                                        >
+                                            {pos.isRoot ? 'R' : pos.degreeIndex + 1}
+                                        </div>
+                                    ) : (
+                                        <div className="w-full border-b border-border/15" style={{ height: 1, marginTop: CELL_H / 2 }} />
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </React.Fragment>
+                ))}
+            </div>
+            {/* Legend */}
+            <div className="flex flex-wrap gap-1.5 mt-2">
+                {DEGREE_COLORS.slice(0, 7).map((color, i) => (
+                    <span key={i} className="flex items-center gap-0.5 text-[9px] text-muted-foreground">
+                        <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
+                        {i === 0 ? 'Raiz' : `${i + 1}°`}
+                    </span>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
     beats,
     tempo,
     onApplyTransposition,
+    onInsertBeats,
     onClose,
 }) => {
     const [selectedTransposition, setSelectedTransposition] = useState<number | null>(null);
     const [selectedProgressionIdx, setSelectedProgressionIdx] = useState(0);
     const [playingVariation, setPlayingVariation] = useState<string | null>(null);
+    const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
+    const [selectedScaleName, setSelectedScaleName] = useState<string | null>(null);
 
     // ── Derived data ──────────────────────────────────────────────────────────
     const noteBeats = useMemo(() => beats.filter(b => !b.isPause && b.strings.some(f => f !== null)), [beats]);
@@ -271,10 +370,10 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                                         key={semitones}
                                         onClick={() => setSelectedTransposition(isSelected ? null : semitones)}
                                         className={`rounded-lg border p-2 cursor-pointer transition-all space-y-1.5 ${outOfRange
-                                                ? 'border-border/30 opacity-40 cursor-not-allowed'
-                                                : isSelected
-                                                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
-                                                    : 'border-border/60 hover:border-border bg-background/40'
+                                            ? 'border-border/30 opacity-40 cursor-not-allowed'
+                                            : isSelected
+                                                ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                                                : 'border-border/60 hover:border-border bg-background/40'
                                             }`}
                                     >
                                         <div className="flex items-center justify-between">
@@ -308,7 +407,7 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                         </div>
                     </Section>
 
-                    {/* ── 3. Scale Variations ──────────────────────────────────────── */}
+                    {/* ── 3. Scale Variations ──────────────────────────────────────────── */}
                     {topKey && (
                         <Section
                             icon={<GitBranch className="w-4 h-4" />}
@@ -317,36 +416,77 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                             defaultOpen={false}
                         >
                             <p className="text-xs text-muted-foreground mb-2">
-                                Compatibilidade das suas notas com cada escala na tonalidade de{' '}
-                                <strong className="text-foreground">{topKey.rootName}</strong>:
+                                Compatibilidade das suas notas com cada escala em{' '}
+                                <strong className="text-foreground">{topKey.rootName}</strong>.
+                                Clique em uma escala para ver as posições no braço:
                             </p>
-                            <div className="space-y-2">
-                                {scaleFits.slice(0, 8).map(({ scale, fit, inScaleNames, outOfNames }) => (
-                                    <div key={scale.name} className="space-y-0.5">
-                                        <div className="flex items-center justify-between">
-                                            <div>
-                                                <span className="text-xs font-semibold text-foreground">{scale.label}</span>
-                                                <span className="ml-2 text-[10px] text-muted-foreground">{scale.description}</span>
+                            <div className="space-y-1.5">
+                                {scaleFits.slice(0, 8).map(({ scale, fit, inScaleNames, outOfNames }) => {
+                                    const isExpanded = selectedScaleName === scale.name;
+                                    const scalePositions = isExpanded
+                                        ? getScalePositions(topKey.root, scale.name, 12)
+                                        : [];
+                                    const tabNotes = new Set(
+                                        beats.flatMap(b => b.strings.map((f, si) => {
+                                            if (f === null) return null;
+                                            // STRING_MIDI_BASE = [64, 59, 55, 50, 45, 40] (e, B, G, D, A, E)
+                                            const baseMidi = [64, 59, 55, 50, 45, 40][si];
+                                            const midi = baseMidi + f;
+                                            return NOTE_NAMES[((midi % 12) + 12) % 12];
+                                        })).filter(Boolean) as string[]
+                                    );
+
+                                    return (
+                                        <div key={scale.name}
+                                            className={`rounded-lg border transition-colors cursor-pointer ${isExpanded ? 'border-primary/50 bg-primary/5' : 'border-border/30 hover:border-border/60'
+                                                }`}
+                                        >
+                                            <button
+                                                className="w-full flex items-center justify-between gap-2 p-2"
+                                                onClick={() => setSelectedScaleName(isExpanded ? null : scale.name)}
+                                            >
+                                                <div className="text-left">
+                                                    <span className="text-xs font-semibold text-foreground">{scale.label}</span>
+                                                    <span className="ml-2 text-[10px] text-muted-foreground">{scale.description}</span>
+                                                </div>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <span className={`text-xs font-mono font-bold ${fit >= 80 ? 'text-green-400' : fit >= 60 ? 'text-yellow-400' : 'text-red-400'
+                                                        }`}>
+                                                        {fit}%
+                                                    </span>
+                                                    {isExpanded
+                                                        ? <ChevronDown className="w-3 h-3 text-muted-foreground" />
+                                                        : <ChevronRight className="w-3 h-3 text-muted-foreground" />}
+                                                </div>
+                                            </button>
+                                            <div className="h-1 bg-secondary rounded-full overflow-hidden mx-2 mb-1">
+                                                <div
+                                                    className={`h-full rounded-full ${fit >= 80 ? 'bg-green-500' : fit >= 60 ? 'bg-yellow-500' : 'bg-red-500/60'
+                                                        }`}
+                                                    style={{ width: `${fit}%` }}
+                                                />
                                             </div>
-                                            <span className={`text-xs font-mono font-bold ${fit >= 80 ? 'text-green-400' : fit >= 60 ? 'text-yellow-400' : 'text-red-400'
-                                                }`}>
-                                                {fit}%
-                                            </span>
+                                            {outOfNames && outOfNames.length > 0 && (
+                                                <p className="text-[10px] text-muted-foreground px-2 pb-1">
+                                                    Fora: <span className="text-red-400 font-mono">{outOfNames.join(', ')}</span>
+                                                </p>
+                                            )}
+                                            {/* Fretboard diagram — shown when expanded */}
+                                            {isExpanded && (
+                                                <div className="px-2 pb-3 pt-1 border-t border-border/30">
+                                                    <p className="text-[10px] text-muted-foreground mb-1.5">
+                                                        Notas com <span className="font-bold text-white">anel branco</span> já aparecem na sua tablatura.
+                                                    </p>
+                                                    <ScaleFretboard
+                                                        positions={scalePositions}
+                                                        fretRange={12}
+                                                        highlightedNotes={tabNotes}
+                                                    />
+                                                </div>
+                                            )}
                                         </div>
-                                        <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                                            <div
-                                                className={`h-full rounded-full ${fit >= 80 ? 'bg-green-500' : fit >= 60 ? 'bg-yellow-500' : 'bg-red-500/60'
-                                                    }`}
-                                                style={{ width: `${fit}%` }}
-                                            />
-                                        </div>
-                                        {outOfNames && outOfNames.length > 0 && (
-                                            <p className="text-[10px] text-muted-foreground">
-                                                Fora: <span className="text-red-400 font-mono">{outOfNames.join(', ')}</span>
-                                            </p>
-                                        )}
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </Section>
                     )}
@@ -366,8 +506,8 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                                         key={i}
                                         onClick={() => setSelectedProgressionIdx(i)}
                                         className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors ${selectedProgressionIdx === i
-                                                ? 'bg-primary text-primary-foreground'
-                                                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                                            ? 'bg-primary text-primary-foreground'
+                                            : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
                                             }`}
                                     >
                                         {p.name.split('(')[0].trim()}
@@ -415,6 +555,25 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                                                 </React.Fragment>
                                             ))}
                                         </div>
+
+                                        {/* Insert into tablature */}
+                                        <div className="flex justify-end">
+                                            <Button
+                                                size="sm"
+                                                variant="secondary"
+                                                className="h-7 text-xs px-3 gap-1.5"
+                                                onClick={() => {
+                                                    const newBeats = prog.chords
+                                                        .filter(Boolean)
+                                                        .map(chord => chordToPlayableBeat(chord.name, chord.notes));
+                                                    onInsertBeats(newBeats);
+                                                }}
+                                                title="Adiciona cada acorde desta progressão como um tempo na tablatura"
+                                            >
+                                                <Guitar className="w-3.5 h-3.5" />
+                                                Inserir acordes na tablatura
+                                            </Button>
+                                        </div>
                                     </div>
                                 );
                             })()}
@@ -432,6 +591,7 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 {variations.map(variation => {
                                     const isPlaying = playingVariation === variation.name;
+                                    const isConfirming = confirmReplace === variation.name;
                                     const hasValidNotes = variation.beats.some(
                                         b => !b.isPause && b.strings.some(f => f !== null && f >= 0 && f <= 24)
                                     );
@@ -462,18 +622,59 @@ export const MelodyAnalysis: React.FC<MelodyAnalysisProps> = ({
                                                 )}
                                             </div>
                                             <MiniTab beats={variation.beats} maxBeats={8} />
-                                            <div className="flex items-center justify-between">
+                                            <div className="flex items-center justify-between gap-1 flex-wrap">
                                                 <span className="text-[10px] text-muted-foreground font-mono">
                                                     {variation.beats.length} tempos
                                                 </span>
-                                                <Button
-                                                    size="sm"
-                                                    variant="ghost"
-                                                    className="h-5 text-[10px] px-2 py-0 text-muted-foreground hover:text-foreground"
-                                                    onClick={() => onApplyTransposition(variation.beats)}
-                                                >
-                                                    Aplicar na tablatura
-                                                </Button>
+                                                <div className="flex gap-1">
+                                                    {/* Insert at end — safe, no confirmation needed */}
+                                                    <Button
+                                                        size="sm"
+                                                        variant="secondary"
+                                                        className="h-6 text-[10px] px-2 py-0 gap-1"
+                                                        onClick={() => onInsertBeats(variation.beats)}
+                                                        title="Adiciona os tempos da variação ao final da tablatura"
+                                                    >
+                                                        <PlusCircle className="w-3 h-3" />
+                                                        Inserir no final
+                                                    </Button>
+                                                    {/* Replace all — needs confirmation */}
+                                                    {isConfirming ? (
+                                                        <>
+                                                            <span className="text-[10px] text-yellow-400 flex items-center">Confirmar?</span>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="destructive"
+                                                                className="h-6 text-[10px] px-2 py-0"
+                                                                onClick={() => {
+                                                                    onApplyTransposition(variation.beats);
+                                                                    setConfirmReplace(null);
+                                                                }}
+                                                            >
+                                                                Sim
+                                                            </Button>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="ghost"
+                                                                className="h-6 text-[10px] px-2 py-0"
+                                                                onClick={() => setConfirmReplace(null)}
+                                                            >
+                                                                Não
+                                                            </Button>
+                                                        </>
+                                                    ) : (
+                                                        <Button
+                                                            size="sm"
+                                                            variant="ghost"
+                                                            className="h-6 text-[10px] px-2 py-0 text-muted-foreground hover:text-foreground gap-1"
+                                                            onClick={() => setConfirmReplace(variation.name)}
+                                                            title="Substitui toda a tablatura por esta variação"
+                                                        >
+                                                            <RefreshCw className="w-3 h-3" />
+                                                            Substituir tudo
+                                                        </Button>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
                                     );

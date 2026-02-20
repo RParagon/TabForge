@@ -63,6 +63,8 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
   const pendingNoteRef = useRef<{ stringIndex: number; fret: number } | null>(null);
   const bpmIntervalRef = useRef<number | null>(null);
   const recordingBeatRef = useRef(0);
+  // Synchronous flag to stop the RAF loop immediately (React state is async)
+  const isListeningRef = useRef(false);
 
   // ── KEY FIX: always call the LATEST onNoteCommitted via ref so RAF loops
   //            never have a stale closure issue.
@@ -100,6 +102,7 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
       recordingBeatRef.current = currentBeatIndex;
       silenceStartRef.current = null;
       pendingNoteRef.current = null;
+      isListeningRef.current = true;  // set before RAF starts
 
       setIsListening(true);
       setRecordingBeat(currentBeatIndex);
@@ -205,7 +208,10 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
           }
         }
 
-        animFrameRef.current = requestAnimationFrame(detect);
+        // Only reschedule if still listening (synchronous check)
+        if (isListeningRef.current) {
+          animFrameRef.current = requestAnimationFrame(detect);
+        }
       };
 
       detect();
@@ -216,10 +222,14 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
 
   // ─── Stop ──────────────────────────────────────────────────────────────────
   const stopListening = useCallback(() => {
+    // Stop the RAF loop synchronously BEFORE cancelling — avoids the 1-frame lag
+    isListeningRef.current = false;
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (bpmIntervalRef.current) clearInterval(bpmIntervalRef.current);
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     if (audioContextRef.current) audioContextRef.current.close();
+    animFrameRef.current = null;
+    bpmIntervalRef.current = null;
 
     setIsListening(false);
     setCurrentPitch(null);
@@ -233,7 +243,9 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
     isNoteActiveRef.current = false;
   }, []);
 
+  // Cleanup on unmount
   useEffect(() => () => {
+    isListeningRef.current = false;
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (bpmIntervalRef.current) clearInterval(bpmIntervalRef.current);
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
@@ -309,8 +321,8 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
             onClick={() => setMode(m)}
             disabled={isListening}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 disabled:opacity-40 ${mode === m
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
               }`}
           >
             {m === 'manual' && <ArrowRight className="w-3 h-3" />}
@@ -418,8 +430,8 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
               <div className="absolute inset-y-0 left-1/2 w-px bg-foreground/30" />
               <div
                 className={`absolute top-0.5 bottom-0.5 w-3 rounded-full transition-all duration-100 ${Math.abs(currentPitch.centsOff) <= 5 ? 'bg-green-400'
-                    : Math.abs(currentPitch.centsOff) <= 15 ? 'bg-yellow-400'
-                      : 'bg-red-400'
+                  : Math.abs(currentPitch.centsOff) <= 15 ? 'bg-yellow-400'
+                    : 'bg-red-400'
                   }`}
                 style={{ left: `${50 + (currentPitch.centsOff / 50) * 40}%`, transform: 'translateX(-50%)' }}
               />
@@ -448,8 +460,8 @@ export const MicrophoneListener: React.FC<MicrophoneListenerProps> = ({
                     key={i}
                     onClick={() => setSelectedMapping(i)}
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-all ${i === selectedMapping
-                        ? 'bg-primary text-primary-foreground ring-2 ring-primary/50'
-                        : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                      ? 'bg-primary text-primary-foreground ring-2 ring-primary/50'
+                      : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
                       }`}
                   >
                     <span className="opacity-70">corda </span>{m.stringName}

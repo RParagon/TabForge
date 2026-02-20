@@ -175,6 +175,11 @@ export const TablatureEditor: React.FC = () => {
     if (!showMicListener) setRecordingCursor(null);
   }, [showMicListener]);
 
+  // ── Insert beats at end (from MelodyAnalysis) ────────────────────────────────
+  const handleInsertBeats = useCallback((newBeats: Beat[]) => {
+    setBeats(prev => [...prev, ...newBeats]);
+  }, []);
+
   // ── Current beat info ────────────────────────────────────────────────────────
   const selectedBeatData = beats[selectedBeat];
   const selectedNotes = selectedBeatData ? getNotesFromBeat(selectedBeatData) : [];
@@ -553,6 +558,7 @@ export const TablatureEditor: React.FC = () => {
             setBeats(transposedBeats);
             setShowAnalysis(false);
           }}
+          onInsertBeats={handleInsertBeats}
           onClose={() => setShowAnalysis(false)}
         />
       )}
